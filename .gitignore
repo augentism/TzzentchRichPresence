@@ -1,0 +1,21 @@
+# Discord Social SDK — 1.3 GB third-party redistributable (all platforms,
+# debug + release). Download it from the Discord developer portal and unpack
+# it here; tz-native/CMakeLists.txt expects discord_social_sdk/include and
+# discord_social_sdk/lib/release.
+/discord_social_sdk/
+
+# Shipped native binaries are build artifacts (rebuilt via tz-native/build.ps1,
+# which also re-copies discord_partner_sdk.dll out of the SDK).
+/bin/
+
+# CMake / MSVC build output
+tz-native/build/
+*.pdb
+*.exp
+*.ilk
+
+# Machine-local Claude Code settings
+.claude/settings.local.json
+
+# Game console logs occasionally dropped here for analysis
+console-*.log
