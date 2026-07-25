@@ -15,7 +15,7 @@ tz-native/build/
 *.ilk
 
 # Machine-local Claude Code settings
-.claude/settings.local.json
+.claude
 
 # Game console logs occasionally dropped here for analysis
 console-*.log
