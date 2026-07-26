@@ -8,6 +8,13 @@
 # which also re-copies discord_partner_sdk.dll out of the SDK).
 /bin/
 
+# Packaged release zips (build_release.py output)
+/releases/
+
+# Mission art extracted from the game bundles (extract_map_images.py output).
+# Fatshark's assets -- regenerate them, don't commit them.
+/map_images/
+
 # CMake / MSVC build output
 tz-native/build/
 *.pdb

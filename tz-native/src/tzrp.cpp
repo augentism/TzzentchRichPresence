@@ -15,6 +15,7 @@
 
 #include "cdiscord.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -53,6 +54,32 @@ std::string take(Discord_String* s)
 std::string from_c(const char* s)
 {
     return s == nullptr ? std::string() : std::string(s);
+}
+
+// Discord validates every presence string and rejects the ENTIRE activity if
+// any single one is out of range -- so a 1-character character name would cost
+// you the whole presence. We clamp instead: too long is truncated, too short is
+// dropped, and the drop is reported so it is visible in the game log.
+struct Limit {
+    size_t min;
+    size_t max;
+};
+
+constexpr Limit LIMIT_TEXT{2, 128};  // details, state, *Text, party.id
+constexpr Limit LIMIT_IMAGE{1, 300}; // assets.*Image
+
+// Truncates on a UTF-8 boundary. Discord counts these limits in codepoints, so
+// cutting at `max` bytes always leaves at most `max` codepoints.
+std::string truncate_utf8(const std::string& value, size_t max_bytes)
+{
+    if (value.size() <= max_bytes) {
+        return value;
+    }
+    size_t end = max_bytes;
+    while (end > 0 && (static_cast<unsigned char>(value[end]) & 0xC0) == 0x80) {
+        --end; // back off out of the middle of a multi-byte sequence
+    }
+    return value.substr(0, end);
 }
 
 // An optional string: `set` distinguishes "" (explicitly empty) from unset.
@@ -153,6 +180,23 @@ void set_error(const std::string& message)
     push_message("error: " + message);
 }
 
+bool is_http_url(const std::string& url)
+{
+    return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0;
+}
+
+// Stable for the lifetime of the process but unique per player, so Discord does
+// not group unrelated players into a single party.
+const std::string& session_party_id()
+{
+    static const std::string id =
+      "tzrp-" +
+      std::to_string(
+        static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&session_party_id)));
+    return id;
+}
+
 // ------------------------------------------------------------ SDK callbacks
 // These run on whatever thread the SDK dispatches from. They only touch our
 // own mutex-guarded queue -- never Lua.
@@ -210,36 +254,71 @@ struct ActivityBuilder {
     ActivityBuilder(const ActivityBuilder&) = delete;
     ActivityBuilder& operator=(const ActivityBuilder&) = delete;
 
+    // Returns false when the field is unusable and must be omitted entirely.
+    static bool usable(const Field& f, const Limit& limit, const char* name, std::string& out)
+    {
+        if (!f.set) {
+            return false;
+        }
+        out = truncate_utf8(f.value, limit.max);
+        if (out.size() < limit.min) {
+            if (!f.value.empty()) {
+                push_message(std::string("dropped ") + name + ": shorter than " +
+                             std::to_string(limit.min) + " characters");
+            }
+            return false;
+        }
+        return true;
+    }
+
     void build(const Presence& p)
     {
         Discord_Activity_SetType(&activity, static_cast<Discord_ActivityTypes>(p.activity_type));
 
-        if (p.details.set) {
-            Discord_String value = str(p.details.value);
+        // These must outlive the Set* calls below; Discord_String is only a view.
+        std::string details_text;
+        std::string state_text;
+
+        if (usable(p.details, LIMIT_TEXT, "details", details_text)) {
+            Discord_String value = str(details_text);
             Discord_Activity_SetDetails(&activity, &value);
         }
-        if (p.state.set) {
-            Discord_String value = str(p.state.value);
+        if (usable(p.state, LIMIT_TEXT, "state", state_text)) {
+            Discord_String value = str(state_text);
             Discord_Activity_SetState(&activity, &value);
         }
 
-        if (p.large_image.set || p.large_text.set || p.small_image.set || p.small_text.set) {
+        std::string large_image_text;
+        std::string large_text_text;
+        std::string small_image_text;
+        std::string small_text_text;
+
+        const bool has_large_image =
+          usable(p.large_image, LIMIT_IMAGE, "assets.largeImage", large_image_text);
+        const bool has_large_text =
+          usable(p.large_text, LIMIT_TEXT, "assets.largeText", large_text_text);
+        const bool has_small_image =
+          usable(p.small_image, LIMIT_IMAGE, "assets.smallImage", small_image_text);
+        const bool has_small_text =
+          usable(p.small_text, LIMIT_TEXT, "assets.smallText", small_text_text);
+
+        if (has_large_image || has_large_text || has_small_image || has_small_text) {
             Discord_ActivityAssets_Init(&assets);
             has_assets = true;
-            Discord_String large_image = str(p.large_image.value);
-            Discord_String large_text = str(p.large_text.value);
-            Discord_String small_image = str(p.small_image.value);
-            Discord_String small_text = str(p.small_text.value);
-            if (p.large_image.set) {
+            Discord_String large_image = str(large_image_text);
+            Discord_String large_text = str(large_text_text);
+            Discord_String small_image = str(small_image_text);
+            Discord_String small_text = str(small_text_text);
+            if (has_large_image) {
                 Discord_ActivityAssets_SetLargeImage(&assets, &large_image);
             }
-            if (p.large_text.set) {
+            if (has_large_text) {
                 Discord_ActivityAssets_SetLargeText(&assets, &large_text);
             }
-            if (p.small_image.set) {
+            if (has_small_image) {
                 Discord_ActivityAssets_SetSmallImage(&assets, &small_image);
             }
-            if (p.small_text.set) {
+            if (has_small_text) {
                 Discord_ActivityAssets_SetSmallText(&assets, &small_text);
             }
             Discord_Activity_SetAssets(&activity, &assets);
@@ -258,9 +337,17 @@ struct ActivityBuilder {
         }
 
         if (p.party_max > 0) {
+            // party.id is mandatory once a party exists. Callers usually only
+            // want to show "2 of 4", so fall back to a per-session id rather
+            // than dropping the party -- or failing the whole activity.
+            std::string party_id;
+            if (!usable(p.party_id, LIMIT_TEXT, "party.id", party_id)) {
+                party_id = session_party_id();
+            }
+
             Discord_ActivityParty_Init(&party);
             has_party = true;
-            Discord_ActivityParty_SetId(&party, str(p.party_id.value));
+            Discord_ActivityParty_SetId(&party, str(party_id));
             Discord_ActivityParty_SetCurrentSize(&party, p.party_current);
             Discord_ActivityParty_SetMaxSize(&party, p.party_max);
             Discord_ActivityParty_SetPrivacy(&party, Discord_ActivityPartyPrivacy_Private);
@@ -268,6 +355,11 @@ struct ActivityBuilder {
         }
 
         for (const Button& b : p.buttons) {
+            // A malformed url fails the whole activity, not just the button.
+            if (b.label.empty() || !is_http_url(b.url)) {
+                push_message("dropped button '" + b.label + "': needs a label and an http(s) url");
+                continue;
+            }
             Discord_ActivityButton button{};
             Discord_ActivityButton_Init(&button);
             Discord_ActivityButton_SetLabel(&button, str(b.label));
