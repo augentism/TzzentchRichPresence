@@ -2,6 +2,7 @@ local mod = get_mod("TzeentchRichPresence")
 
 local util = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPresence/presence/util")
 local assets = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPresence/presence/assets")
+local invite = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPresence/presence/invite")
 
 -- Turns a gather.snapshot() into the table native.set_presence() wants.
 --
@@ -276,6 +277,7 @@ function format.build(snapshot, start_time)
 		party_id = party.id,
 		party_size = party.size,
 		party_max = party.max,
+		join_secret = invite.build_secret(snapshot),
 		start_time = start_time,
 	}
 end

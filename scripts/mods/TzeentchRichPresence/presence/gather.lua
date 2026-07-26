@@ -246,12 +246,21 @@ local function get_party(in_mission)
 
 	size = size or util.safe(myself.num_party_members, myself) or 0
 
-	local id = mechanism_data().session_id
+	-- The Fatshark party id, NOT the mission session id: Discord only offers a
+	-- Join when every member of the party publishes the SAME party id, and it
+	-- is also half of what the joiner needs for social:join_party().
+	-- Returns "" when not in a party.
+	local id = Managers.party_immaterium and util.safe(
+		Managers.party_immaterium.party_id, Managers.party_immaterium)
 
-	-- No session id in the hub. Leave it nil and keep the sizes: the native
-	-- side substitutes a stable per-session id, which is what makes the party
-	-- still render as "(1 of 4)" outside a mission.
 	if type(id) ~= "string" or #id < 2 then
+		-- Fall back to the mission session so squadmates still group visually.
+		id = mechanism_data().session_id
+	end
+
+	if type(id) ~= "string" or #id < 2 then
+		-- Nothing usable: the native side substitutes a per-session id so the
+		-- party still renders as "(1 of 4)". Not joinable, which is correct.
 		id = nil
 	end
 
@@ -260,6 +269,20 @@ local function get_party(in_mission)
 		size = math.min(math.max(size, 1), MAX_PARTY),
 		max = MAX_PARTY,
 	}
+end
+
+--- Our own Fatshark account id -- the other half of the join secret.
+local function get_account_id()
+	local player_manager = Managers and Managers.player
+
+	if not player_manager then
+		return nil
+	end
+
+	local player = util.safe(player_manager.local_player_safe, player_manager, 1)
+	local account_id = player and util.safe(player.account_id, player)
+
+	return type(account_id) == "string" and #account_id > 0 and account_id or nil
 end
 
 --- Single entry point. `store` is the mod's persistent table (level cache).
@@ -297,6 +320,7 @@ function gather.snapshot(store)
 		havoc = havoc,
 		circumstance = circumstance,
 		player = get_player(store),
+		account_id = get_account_id(),
 		party = get_party(in_mission),
 		activity_id = activity_id,
 		solo = solo,

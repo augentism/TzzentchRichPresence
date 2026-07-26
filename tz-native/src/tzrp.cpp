@@ -120,6 +120,10 @@ struct Presence {
     Field small_image;
     Field small_text;
     Field party_id;
+    // Opaque payload we define; Discord stores it and hands it only to users
+    // accepted into the party. Setting it (plus a party with room) is what
+    // makes Discord show the Join button at all.
+    Field join_secret;
     int32_t party_current = 0;
     int32_t party_max = 0;
     uint64_t start_time = 0;
@@ -132,6 +136,7 @@ struct Presence {
         return details == o.details && state == o.state && large_image == o.large_image &&
                large_text == o.large_text && small_image == o.small_image &&
                small_text == o.small_text && party_id == o.party_id &&
+               join_secret == o.join_secret &&
                party_current == o.party_current && party_max == o.party_max &&
                start_time == o.start_time && end_time == o.end_time &&
                activity_type == o.activity_type && buttons == o.buttons;
@@ -141,6 +146,7 @@ struct Presence {
 struct State {
     std::mutex mutex;
     bool initialized = false;
+    uint64_t application_id = 0;
     Discord_Client client{};
 
     Presence staged;
@@ -148,6 +154,8 @@ struct State {
     bool has_sent = false;
 
     std::deque<std::string> messages;
+    // Join secrets delivered by Discord, drained by Lua from mod.update.
+    std::deque<std::string> joins;
     std::string last_error;
 };
 
@@ -209,6 +217,24 @@ void on_log(Discord_String message, Discord_LoggingSeverity severity, void*)
     push_message_locked("sdk: " + take(&message));
 }
 
+// Fires when someone accepts an invite in their Discord client. Whatever we
+// put in the join secret comes back here, on THEIR machine.
+void on_activity_join(Discord_String joinSecret, void*)
+{
+    std::lock_guard<std::mutex> lock(g().mutex);
+    std::string secret = take(&joinSecret);
+
+    if (secret.empty()) {
+        return;
+    }
+
+    if (g().joins.size() >= 8) {
+        g().joins.pop_front();
+    }
+    g().joins.push_back(secret);
+    push_message("join requested");
+}
+
 void on_presence_result(Discord_ClientResult* result, void*)
 {
     if (result == nullptr) {
@@ -231,6 +257,8 @@ struct ActivityBuilder {
     Discord_ActivityAssets assets{};
     Discord_ActivityTimestamps timestamps{};
     Discord_ActivityParty party{};
+    Discord_ActivitySecrets secrets{};
+    bool has_secrets = false;
     bool has_assets = false;
     bool has_timestamps = false;
     bool has_party = false;
@@ -239,6 +267,9 @@ struct ActivityBuilder {
 
     ~ActivityBuilder()
     {
+        if (has_secrets) {
+            Discord_ActivitySecrets_Drop(&secrets);
+        }
         if (has_party) {
             Discord_ActivityParty_Drop(&party);
         }
@@ -354,6 +385,16 @@ struct ActivityBuilder {
             Discord_Activity_SetParty(&activity, &party);
         }
 
+        // Only meaningful alongside a party with room in it -- Discord ignores
+        // a join secret otherwise, so don't bother sending one.
+        std::string join_secret;
+        if (p.party_max > 0 && usable(p.join_secret, LIMIT_TEXT, "secrets.join", join_secret)) {
+            Discord_ActivitySecrets_Init(&secrets);
+            has_secrets = true;
+            Discord_ActivitySecrets_SetJoin(&secrets, str(join_secret));
+            Discord_Activity_SetSecrets(&activity, &secrets);
+        }
+
         for (const Button& b : p.buttons) {
             // A malformed url fails the whole activity, not just the button.
             if (b.label.empty() || !is_http_url(b.url)) {
@@ -422,11 +463,41 @@ TZRP_API int TZRP_Init(const char* application_id)
         Discord_Client_SetApplicationId(&s.client, id);
         Discord_Client_AddLogCallback(
           &s.client, on_log, nullptr, nullptr, Discord_LoggingSeverity_Warning);
+        Discord_Client_SetActivityJoinCallback(&s.client, on_activity_join, nullptr, nullptr);
 
+        s.application_id = id;
         s.initialized = true;
         s.has_sent = false;
         push_message("initialized for application " + id_text);
         return 1;
+    }
+    TZRP_GUARD(0)
+}
+
+/// Tells Discord how to launch this game when someone accepts an invite while
+/// the game is closed. Without it, a join only works if the recipient already
+/// has the game running -- Discord has no way to start it.
+///
+/// The registration is stored locally on THIS machine by the Discord client,
+/// so it only ever exists for people who have run this mod at least once.
+/// Returns 1 on success.
+TZRP_API int TZRP_RegisterSteamLaunch(unsigned int steam_app_id)
+{
+    try {
+        State& s = g();
+        std::lock_guard<std::mutex> lock(s.mutex);
+
+        if (!s.initialized) {
+            set_error("register launch before init");
+            return 0;
+        }
+
+        const bool ok = Discord_Client_RegisterLaunchSteamApplication(
+          &s.client, s.application_id, static_cast<uint32_t>(steam_app_id));
+
+        push_message(ok ? "registered steam launch for app " + std::to_string(steam_app_id)
+                        : "failed to register steam launch");
+        return ok ? 1 : 0;
     }
     TZRP_GUARD(0)
 }
@@ -488,6 +559,7 @@ TZRP_API int TZRP_Status(void)
 
 TZRP_SETTER(TZRP_SetDetails, details)
 TZRP_SETTER(TZRP_SetState, state)
+TZRP_SETTER(TZRP_SetJoinSecret, join_secret)
 
 TZRP_API void TZRP_SetLargeImage(const char* key, const char* text)
 {
@@ -639,6 +711,35 @@ TZRP_API int TZRP_PollMessage(char* buffer, int buffer_size)
             ? message.size()
             : static_cast<size_t>(buffer_size) - 1;
         std::memcpy(buffer, message.data(), length);
+        buffer[length] = '\0';
+        return 1;
+    }
+    TZRP_GUARD(0)
+}
+
+/// Drains one pending join secret into `buffer` (always NUL-terminated).
+/// Returns 1 if one was written, 0 if none are pending. Poll this every frame
+/// alongside TZRP_PollMessage.
+TZRP_API int TZRP_PollJoin(char* buffer, int buffer_size)
+{
+    try {
+        if (buffer == nullptr || buffer_size <= 0) {
+            return 0;
+        }
+
+        State& s = g();
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.joins.empty()) {
+            return 0;
+        }
+
+        const std::string secret = std::move(s.joins.front());
+        s.joins.pop_front();
+
+        const size_t length = secret.size() < static_cast<size_t>(buffer_size) - 1
+                                ? secret.size()
+                                : static_cast<size_t>(buffer_size) - 1;
+        std::memcpy(buffer, secret.data(), length);
         buffer[length] = '\0';
         return 1;
     }

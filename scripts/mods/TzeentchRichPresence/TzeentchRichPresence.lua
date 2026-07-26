@@ -4,10 +4,16 @@ local native = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPres
 local util = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPresence/presence/util")
 local gather = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPresence/presence/gather")
 local format = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPresence/presence/format")
+local invite = mod:io_dofile("TzeentchRichPresence/scripts/mods/TzeentchRichPresence/presence/invite")
 
 -- Discord application id, from discord.com/developers/applications.
 -- Art asset keys (see presence/assets.lua) resolve against this app.
 local APPLICATION_ID = "1530377227470897152"
+
+-- Darktide's Steam app id, so Discord can launch the game when someone accepts
+-- an invite with the game closed. Without this a join only works if the
+-- recipient already has Darktide running.
+local STEAM_APP_ID = 1361210
 
 -- PresenceManager._update_my_presence is event-driven and does NOT fire during
 -- a mission, so it cannot be the only trigger; poll as well. Polling is cheap
@@ -37,6 +43,13 @@ local function ensure_started()
 
 	if not ok then
 		mod:error("Discord SDK unavailable: %s", util.escape(error_message))
+		return ok
+	end
+
+	local registered, reason = native.register_steam_launch(STEAM_APP_ID)
+
+	if not registered and reason then
+		mod:info("[tzrp] %s", util.escape(reason))
 	end
 
 	return ok
@@ -95,6 +108,22 @@ function mod.update(dt)
 	if messages then
 		for _, message in ipairs(messages) do
 			mod:info("[discord] %s", util.escape(message))
+		end
+	end
+
+	-- Someone accepted an invite to our party in their Discord client, so this
+	-- copy of the game is being told to join them.
+	local joins = native.poll_joins()
+
+	if joins then
+		for _, secret in ipairs(joins) do
+			local ok, reason = invite.accept(secret)
+
+			if ok then
+				mod:echo("Joining party from Discord invite...")
+			else
+				mod:info("[tzrp] ignored join: %s", util.escape(tostring(reason)))
+			end
 		end
 	end
 
