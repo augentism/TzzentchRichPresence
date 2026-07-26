@@ -271,6 +271,34 @@ local function get_party(in_mission)
 	}
 end
 
+--- Can someone actually act on a Discord invite to us right now?
+---
+--- Publishing a join secret we cannot honour is worse than publishing none:
+--- Discord shows a Join, the recipient clicks it, the game refuses, and the
+--- invite spins forever in their chat because Discord is waiting for a party
+--- change that will never happen. There is no SDK call to cancel that spinner,
+--- so the only fix is not to advertise in the first place.
+local function get_joinable()
+	local social = Managers and Managers.data_service and Managers.data_service.social
+
+	-- can_be_joined for the current activity: false during loading, cinematics,
+	-- the splash/title screens and onboarding.
+	if social and util.safe(social.local_player_is_joinable, social) == false then
+		return false
+	end
+
+	-- A private session in progress only admits Fatshark friends. We cannot
+	-- know whether a given Discord viewer is one, so advertising Join here
+	-- produces exactly the stuck invite described above.
+	local party = Managers and Managers.party_immaterium
+
+	if party and util.safe(party.is_in_private_session, party) == true then
+		return false
+	end
+
+	return true
+end
+
 --- Our own Fatshark account id -- the other half of the join secret.
 local function get_account_id()
 	local player_manager = Managers and Managers.player
@@ -321,6 +349,7 @@ function gather.snapshot(store)
 		circumstance = circumstance,
 		player = get_player(store),
 		account_id = get_account_id(),
+		joinable = get_joinable(),
 		party = get_party(in_mission),
 		activity_id = activity_id,
 		solo = solo,

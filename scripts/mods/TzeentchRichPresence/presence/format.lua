@@ -266,6 +266,7 @@ function format.build(snapshot, start_time)
 
 	local party = snapshot.party or {}
 	local archetype = snapshot.player and snapshot.player.archetype
+	local join_secret, join_reason = invite.build_secret(snapshot)
 
 	return {
 		details = details,
@@ -277,7 +278,9 @@ function format.build(snapshot, start_time)
 		party_id = party.id,
 		party_size = party.size,
 		party_max = party.max,
-		join_secret = invite.build_secret(snapshot),
+		join_secret = join_secret,
+		-- Diagnostics only; native.set_presence ignores it.
+		join_reason = join_reason,
 		start_time = start_time,
 	}
 end

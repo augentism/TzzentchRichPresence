@@ -69,14 +69,21 @@ local function refresh()
 
 	native.set_presence(presence)
 
-	if mod:get("debug_logging") then
-		local line = tostring(presence.details) .. " | " .. tostring(presence.state)
+	-- Both of these log only on change; refresh() runs every REFRESH_INTERVAL
+	-- and would otherwise flood the console.
+	local line = tostring(presence.details) .. " | " .. tostring(presence.state)
 
-		-- Only on change, or this floods the log every REFRESH_INTERVAL.
-		if line ~= store.last_line then
-			store.last_line = line
-			mod:info("[tzrp] %s", util.escape(line))
-		end
+	if line ~= store.last_line then
+		store.last_line = line
+		util.debug(line)
+	end
+
+	local invite_state = (presence.join_secret and "advertising: " or "no join offered: ")
+		.. tostring(presence.join_reason)
+
+	if invite_state ~= store.last_invite_state then
+		store.last_invite_state = invite_state
+		util.debug("invite: " .. invite_state)
 	end
 end
 
@@ -116,13 +123,18 @@ function mod.update(dt)
 	local joins = native.poll_joins()
 
 	if joins then
+		util.debug(string.format("join: %d secret(s) delivered by Discord", #joins))
+
 		for _, secret in ipairs(joins) do
 			local ok, reason = invite.accept(secret)
 
 			if ok then
 				mod:echo("Joining party from Discord invite...")
 			else
+				-- Not gated on debug_logging: a refused join is something the
+				-- player asked for and got nothing from, so it always logs.
 				mod:info("[tzrp] ignored join: %s", util.escape(tostring(reason)))
+				mod:echo("Could not join: " .. tostring(reason))
 			end
 		end
 	end

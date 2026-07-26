@@ -44,6 +44,18 @@ function util.escape(text)
 	return (tostring(text):gsub("%%", "%%%%"))
 end
 
+--- Logs one line to the console when the debug_logging setting is on.
+--- Takes an already-formatted string: mod:info re-string.formats its message,
+--- so anything containing a game-supplied '%' has to be escaped exactly once,
+--- and doing it here keeps every caller from having to remember.
+function util.debug(message)
+	if not mod:get("debug_logging") then
+		return
+	end
+
+	mod:info("[tzrp] %s", util.escape(tostring(message)))
+end
+
 --- Byte-length trim that never splits a UTF-8 sequence.
 function util.clip(text, max_bytes)
 	if type(text) ~= "string" or #text <= max_bytes then
