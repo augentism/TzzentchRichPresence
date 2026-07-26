@@ -11,9 +11,10 @@
 # Packaged release zips (build_release.py output)
 /releases/
 
-# Mission art extracted from the game bundles (extract_map_images.py output).
-# Fatshark's assets -- regenerate them, don't commit them.
+# Art extracted from the game bundles (extract_map_images.py /
+# extract_class_icons.py output). Fatshark's assets -- regenerate, don't commit.
 /map_images/
+/class_icons/
 
 # CMake / MSVC build output
 tz-native/build/
