@@ -38,6 +38,32 @@ function util.loc(key)
 	return value
 end
 
+--- Removes Stingray inline markup: "{#color(255,50,50)}Bob{#reset()}" -> "Bob".
+---
+--- The game renders these tags; Discord does not, so they would show up
+--- literally in the presence. Mods that recolour names hook Player:name() and
+--- wrap the result this way -- ColorSelection is the one that prompted this --
+--- so anything read from a name has to be cleaned first.
+---
+--- Deliberately matches any {#...} tag rather than colour/reset specifically,
+--- so a new tag type from another mod is stripped too.
+function util.strip_markup(text)
+	if type(text) ~= "string" then
+		return text
+	end
+
+	local cleaned = text:gsub("{#.-}", "")
+
+	-- Tags can leave stray padding behind once removed.
+	cleaned = cleaned:match("^%s*(.-)%s*$")
+
+	if cleaned == "" then
+		return text
+	end
+
+	return cleaned
+end
+
 --- Doubles '%' so a localized string can be passed through mod:info/mod:echo,
 --- which re-string.format their message and crash on a stray format spec.
 function util.escape(text)

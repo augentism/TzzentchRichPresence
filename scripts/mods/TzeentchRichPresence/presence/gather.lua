@@ -219,7 +219,9 @@ local function get_player(store)
 	end
 
 	return {
-		name = name,
+		-- Other mods hook Player:name() and wrap it in colour markup, which
+		-- Discord would render literally.
+		name = util.strip_markup(name),
 		archetype = archetype,
 		level = get_level(profile, store),
 	}
